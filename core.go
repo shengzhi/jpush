@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"time"
 )
 
 // Platform 推送平台
@@ -43,6 +44,7 @@ type PushReplay struct {
 type JPushClient struct {
 	appkey, secret string
 	basicauth      string
+	client         *http.Client
 }
 
 // NewJPushClient 创建极光推送客户端实例
@@ -50,14 +52,53 @@ type JPushClient struct {
 func NewJPushClient(key, secret string, queueLen int) *JPushClient {
 	client := JPushClient{appkey: key, secret: secret}
 	client.basicauth = base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", key, secret)))
+	client.client = &http.Client{Timeout: time.Second * 30,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
 	return &client
 }
 
-const apigateway = "https://api.jpush.cn/v3/push"
+const apigateway = "https://api.jpush.cn"
 
 // Push 执行消息推送
-func (j JPushClient) Push(req PushRequest) (PushReplay, error) {
-	return j.call(req, apigateway)
+func (j *JPushClient) Push(req PushRequest) (PushReplay, error) {
+	return j.call(req, fmt.Sprintf("%s/v3/push", apigateway))
+}
+
+// PushToAll 向所有用户推送消息通知
+func (j *JPushClient) PushToAll(content string) (PushReplay, error) {
+	req := PushRequest{
+		Platform:     AllPlatform,
+		Audience:     AudienceAll(),
+		Notification: &Notification{Alert: content},
+	}
+	return j.Push(req)
+}
+
+// PushToUser 推送消息给指定的用户
+func (j *JPushClient) PushToUser(content string, ids ...string) (PushReplay, error) {
+	aud := &Audience{}
+	aud = aud.AddObject(AudienceRegID(ids...))
+	req := PushRequest{
+		Platform:     AllPlatform,
+		Audience:     *aud,
+		Notification: &Notification{Alert: content},
+	}
+	return j.Push(req)
+}
+
+// PushToAnyTag 推送消息给任意tag
+func (j *JPushClient) PushToAnyTag(content string, tag ...string) (PushReplay, error) {
+	aud := &Audience{}
+	aud = aud.AddObject(AudienceTag(tag...))
+	req := PushRequest{
+		Platform:     AllPlatform,
+		Audience:     *aud,
+		Notification: &Notification{Alert: content},
+	}
+	return j.Push(req)
 }
 
 const validateapigateway = "https://api.jpush.cn/v3/push/validate"
@@ -80,12 +121,7 @@ func (j JPushClient) call(r PushRequest, url string) (PushReplay, error) {
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", fmt.Sprintf("Basic %s", j.basicauth))
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-	}
-	response, err := client.Do(request)
+	response, err := j.client.Do(request)
 	if response != nil {
 		defer response.Body.Close()
 	}
